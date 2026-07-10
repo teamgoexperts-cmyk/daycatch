@@ -41,7 +41,18 @@ load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
 JWT_ALG = "HS256"
 JWT_TTL_HOURS = int(os.getenv("JWT_TTL_HOURS", "720"))  # 720h = 30 days
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Always allow the public site + local Vite, then merge any extra CORS_ORIGINS.
+_FRONTEND_ORIGINS = [
+    "https://daycatch.in",
+    "https://www.daycatch.in",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_env_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _env_origins == ["*"]:
+    CORS_ORIGINS = ["*"]
+else:
+    CORS_ORIGINS = list(dict.fromkeys(_FRONTEND_ORIGINS + _env_origins))
 OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
 # Dev: log OTP to server console and return it in the API response (no SMS provider).
 DEV_LOG_OTP = os.getenv("DEV_LOG_OTP", "true").lower() in ("1", "true", "yes")
@@ -162,6 +173,8 @@ app = FastAPI(title="DayCatch Auth API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS or ["*"],
+    # Local Vite + the public site (static host calls Render cross-origin).
+    allow_origin_regex=r"https://([a-z0-9-]+\.)*daycatch\.in|http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,0 +1,19 @@
+# Railway Postgres — use PUBLIC URL from your laptop; internal URL only works inside Railway.
+DATABASE_PUBLIC_URL=postgresql://postgres:nqdsgcNFReVyzsaQCpsYcvoVavPAStVd@hayabusa.proxy.rlwy.net:12043/railway
+DATABASE_URL=postgresql://postgres:nqdsgcNFReVyzsaQCpsYcvoVavPAStVd@hayabusa.proxy.rlwy.net:12043/railway
+
+JWT_SECRET=daycatch-local-dev-jwt-secret-change-in-production
+JWT_TTL_HOURS=12
+
+DEV_LOG_OTP=true
+OTP_TTL_MINUTES=10
+
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://daycatch.in,https://www.daycatch.in,http://localhost:8000,http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://127.0.0.1:8082,http://127.0.0.1:8083,http://127.0.0.1:8084
+
+ADMIN_PHONES=+919999999999
+DISTRIBUTOR_PHONES=
+KIOSK_PHONES=
+
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=
