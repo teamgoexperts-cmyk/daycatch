@@ -151,9 +151,16 @@ def _initiate_easebuzz_payment(order_id: int, amount: float, user: User) -> dict
         else "https://testpay.easebuzz.in/payment/initiateLink"
     )
     
+    import pprint
+    print("--- EASEBUZZ REQUEST ---")
+    print(f"URL: {url}")
+    pprint.pprint(payload)
+    
     try:
         r = requests.post(url, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded"})
         res = r.json()
+        print("--- EASEBUZZ RESPONSE ---")
+        pprint.pprint(res)
         if res.get("status") == 1:
             access_key = res.get("data")
             base_pay_url = (
