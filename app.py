@@ -971,6 +971,37 @@ def admin_delete_menu_item(
     return Response(status_code=204)
 
 
+class CouponIn(BaseModel):
+    code: str
+    coupon_type: str  # welcome | one_time | regular
+    discount_type: str  # percentage | flat
+    discount_value: float
+    max_discount: Optional[float] = None
+    min_bill_amount: Optional[float] = None
+    applicable_categories: Optional[list[str]] = None
+    applicable_products: Optional[list[int]] = None
+    start_date: date
+    end_date: date
+    is_active: Optional[bool] = True
+
+
+class CouponOut(BaseModel):
+    id: int
+    code: str
+    coupon_type: str
+    discount_type: str
+    discount_value: float
+    max_discount: Optional[float] = None
+    min_bill_amount: Optional[float] = None
+    applicable_categories: Optional[list[str]] = None
+    applicable_products: Optional[list[int]] = None
+    start_date: date
+    end_date: date
+    kiosk_user_id: Optional[int] = None
+    is_active: bool
+    created_at: datetime
+
+
 # ============ Admin: coupons ============
 @app.get("/admin/coupons", response_model=list[CouponOut])
 def list_admin_coupons(
@@ -2095,37 +2126,6 @@ def _order_dto(
             for i in items
         ],
     )
-
-
-class CouponIn(BaseModel):
-    code: str
-    coupon_type: str  # welcome | one_time | regular
-    discount_type: str  # percentage | flat
-    discount_value: float
-    max_discount: Optional[float] = None
-    min_bill_amount: Optional[float] = None
-    applicable_categories: Optional[list[str]] = None
-    applicable_products: Optional[list[int]] = None
-    start_date: date
-    end_date: date
-    is_active: Optional[bool] = True
-
-
-class CouponOut(BaseModel):
-    id: int
-    code: str
-    coupon_type: str
-    discount_type: str
-    discount_value: float
-    max_discount: Optional[float] = None
-    min_bill_amount: Optional[float] = None
-    applicable_categories: Optional[list[str]] = None
-    applicable_products: Optional[list[int]] = None
-    start_date: date
-    end_date: date
-    kiosk_user_id: Optional[int] = None
-    is_active: bool
-    created_at: datetime
 
 
 class CouponValidateIn(BaseModel):
