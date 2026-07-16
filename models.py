@@ -170,9 +170,20 @@ class Kiosk(Base):
     radius = Column(Numeric(7, 2), nullable=True)
     shop_status = Column(String, nullable=False, default="inactive")    # admin-controlled
     operation_status = Column(String, nullable=False, default="closed")  # owner-controlled
+    open_24h = Column(Boolean, default=True, nullable=False)
+    opening_time = Column(String(5), nullable=True)  # HH:MM local kiosk time
+    closing_time = Column(String(5), nullable=True)  # HH:MM local kiosk time
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+    @property
+    def hours_label(self):
+        if self.open_24h:
+            return "Open 24 hours"
+        if self.opening_time and self.closing_time:
+            return f"{self.opening_time}-{self.closing_time}"
+        return "Hours not set"
 
 
 class KioskMenuItem(Base):

@@ -78,6 +78,7 @@ ENQUIRY_TO = os.getenv("ENQUIRY_TO", "vinod.mallolu@gmail.com").strip()
 ROLES = ("admin", "distributor", "kiosk", "customer")
 Role = Literal["admin", "distributor", "kiosk", "customer"]
 PHONE_RE = re.compile(r"^\+91\d{10}$")
+TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MOBILE_RE = re.compile(r"^\+91[6-9]\d{9}$")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z\s'-]{0,49}$")
@@ -852,6 +853,53 @@ ShopStatus = Literal["active", "inactive"]
 OperationStatus = Literal["open", "closed"]
 
 
+def _valid_hhmm(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not TIME_RE.match(value):
+        raise HTTPException(400, "Time must be in HH:MM format.")
+    hh, mm = [int(part) for part in value.split(":")]
+    if hh > 23 or mm > 59:
+        raise HTTPException(400, "Time must be a valid 24-hour clock time.")
+    return value
+
+
+def _minutes(value: str) -> int:
+    hh, mm = [int(part) for part in value.split(":")]
+    return hh * 60 + mm
+
+
+def _kiosk_in_hours(k: Kiosk, now_utc: Optional[datetime] = None) -> bool:
+    if k.open_24h:
+        return True
+    if not k.opening_time or not k.closing_time:
+        return False
+    start = _minutes(k.opening_time)
+    end = _minutes(k.closing_time)
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(_IST)
+    current = now.hour * 60 + now.minute
+    if start == end:
+        return False
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def _effective_kiosk_operation_status(k: Kiosk) -> str:
+    if k.shop_status != "active" or k.operation_status != "open":
+        return "closed"
+    return "open" if _kiosk_in_hours(k) else "closed"
+
+
+def _kiosk_hours_label(k: Kiosk) -> str:
+    if k.open_24h:
+        return "Open 24 hours"
+    if k.opening_time and k.closing_time:
+        return f"{k.opening_time}-{k.closing_time}"
+    return "Hours not set"
+
+
 def distributor_required(user: User = Depends(current_user)) -> User:
     if user.role != "distributor":
         raise HTTPException(403, "Distributor access required.")
@@ -1095,6 +1143,10 @@ class CustomerMenuShop(BaseModel):
     # "open" | "closed" — the customer can browse either way, but the UI
     # surfaces a "currently closed" banner when this is "closed".
     operation_status: str
+    open_24h: Optional[bool] = None
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    hours_label: Optional[str] = None
 
 
 class CustomerMenuItem(BaseModel):
@@ -1428,7 +1480,11 @@ def customer_storefront(
                 name=k.name,
                 location=k.location,
                 distance_km=round(dist, 2),
-                operation_status=k.operation_status,
+                operation_status=_effective_kiosk_operation_status(k),
+                open_24h=k.open_24h,
+                opening_time=k.opening_time,
+                closing_time=k.closing_time,
+                hours_label=_kiosk_hours_label(k),
             ),
             items=kitems,
         )
@@ -2113,7 +2169,7 @@ def _build_kiosk_draft(
     if hit is None:
         raise HTTPException(400, "No kiosk serves your current location.")
     _dist, k = hit
-    if k.operation_status != "open":
+    if _effective_kiosk_operation_status(k) != "open":
         raise HTTPException(
             400, "This kiosk is currently closed. Try again when it reopens."
         )
@@ -3316,6 +3372,10 @@ class KioskOut(BaseModel):
     radius: Optional[float] = None
     shop_status: str
     operation_status: str
+    open_24h: bool = True
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    hours_label: Optional[str] = None
 
 
 class KioskIn(BaseModel):
@@ -3325,6 +3385,9 @@ class KioskIn(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     radius: Optional[float] = None
+    open_24h: bool = True
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
 
 
 class KioskUpdate(BaseModel):
@@ -3335,6 +3398,9 @@ class KioskUpdate(BaseModel):
     lon: Optional[float] = None
     radius: Optional[float] = None
     operation_status: Optional[OperationStatus] = None
+    open_24h: Optional[bool] = None
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
 
 
 @app.get("/kiosk/shop", response_model=Optional[KioskOut])
@@ -3364,6 +3430,17 @@ def upsert_my_kiosk(
     k.lat = body.lat
     k.lon = body.lon
     k.radius = body.radius
+    k.open_24h = body.open_24h
+    if body.open_24h:
+        k.opening_time = None
+        k.closing_time = None
+    else:
+        opening_time = _valid_hhmm(body.opening_time)
+        closing_time = _valid_hhmm(body.closing_time)
+        if not opening_time or not closing_time:
+            raise HTTPException(400, "Opening and closing times are required.")
+        k.opening_time = opening_time
+        k.closing_time = closing_time
     # Editing kiosk details requires admin (re-)approval.
     k.shop_status = "inactive"
     k.operation_status = "closed"
@@ -3390,6 +3467,17 @@ def patch_my_kiosk(
     if "operation_status" in data:
         op = data.pop("operation_status")
         k.operation_status = op if k.shop_status == "active" else "closed"
+    if "open_24h" in data:
+        k.open_24h = bool(data.pop("open_24h"))
+        if k.open_24h:
+            k.opening_time = None
+            k.closing_time = None
+    if "opening_time" in data:
+        k.opening_time = _valid_hhmm(data.pop("opening_time"))
+    if "closing_time" in data:
+        k.closing_time = _valid_hhmm(data.pop("closing_time"))
+    if not k.open_24h and (not k.opening_time or not k.closing_time):
+        raise HTTPException(400, "Opening and closing times are required.")
     if "address" in data:
         k.address = (data.pop("address") or "").strip() or None
     for field, value in data.items():
@@ -3625,10 +3713,16 @@ class AdminKioskOut(BaseModel):
     radius: Optional[float] = None
     shop_status: str
     operation_status: str
+    open_24h: bool = True
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    hours_label: Optional[str] = None
+    is_open_now: bool = False
 
 
 class AdminKioskUpdate(BaseModel):
-    shop_status: Literal["active", "inactive"]
+    shop_status: Optional[Literal["active", "inactive"]] = None
+    operation_status: Optional[OperationStatus] = None
 
 
 def _admin_kiosk_dto(k: Kiosk, user: Optional[User]) -> AdminKioskOut:
@@ -3647,6 +3741,11 @@ def _admin_kiosk_dto(k: Kiosk, user: Optional[User]) -> AdminKioskOut:
         radius=float(k.radius) if k.radius is not None else None,
         shop_status=k.shop_status,
         operation_status=k.operation_status,
+        open_24h=k.open_24h,
+        opening_time=k.opening_time,
+        closing_time=k.closing_time,
+        hours_label=_kiosk_hours_label(k),
+        is_open_now=_effective_kiosk_operation_status(k) == "open",
     )
 
 
@@ -3674,8 +3773,13 @@ def admin_update_kiosk_status(
     k = db.query(Kiosk).filter(Kiosk.id == kiosk_id).first()
     if not k:
         raise HTTPException(404, "Kiosk not found.")
-    k.shop_status = body.shop_status
-    if body.shop_status == "inactive":
+    if body.shop_status is not None:
+        k.shop_status = body.shop_status
+    if body.operation_status is not None:
+        if body.operation_status == "open" and k.shop_status != "active":
+            raise HTTPException(400, "Activate this kiosk before opening it.")
+        k.operation_status = body.operation_status
+    if k.shop_status == "inactive":
         k.operation_status = "closed"
     db.commit()
     db.refresh(k)

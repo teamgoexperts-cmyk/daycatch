@@ -51,6 +51,9 @@ def migrate_columns() -> None:
         # kiosks with a placeholder so the field is never empty.
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".kiosks ADD COLUMN IF NOT EXISTS address VARCHAR'))
         conn.execute(text(f"UPDATE \"{SCHEMA}\".kiosks SET address = 'address needed' WHERE address IS NULL OR address = ''"))
+        conn.execute(text(f"ALTER TABLE \"{SCHEMA}\".kiosks ADD COLUMN IF NOT EXISTS open_24h BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA}".kiosks ADD COLUMN IF NOT EXISTS opening_time VARCHAR(5)'))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA}".kiosks ADD COLUMN IF NOT EXISTS closing_time VARCHAR(5)'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".users ADD COLUMN IF NOT EXISTS address VARCHAR'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".users ADD COLUMN IF NOT EXISTS lat NUMERIC(10, 7)'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".users ADD COLUMN IF NOT EXISTS lon NUMERIC(10, 7)'))
