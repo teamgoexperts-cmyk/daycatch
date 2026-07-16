@@ -1881,6 +1881,7 @@ def distributor_serviceability(
 class OrderItemIn(BaseModel):
     master_item_id: int
     quantity: int
+    variant_label: Optional[str] = None
 
 
 class OrderIn(BaseModel):
@@ -1898,6 +1899,25 @@ class OrderIn(BaseModel):
     postal_address: str | None = None
     lat: float | None = None
     lon: float | None = None
+
+
+def _selected_variant(
+    item: MenuItem, variant_label: Optional[str]
+) -> tuple[str, float, Optional[float]]:
+    variants = _menu_item_variants(item) or []
+    if not variants:
+        return item.name, float(item.price), (
+            float(item.weight_kg) if item.weight_kg is not None else None
+        )
+    label = (variant_label or variants[0].get("label") or "").strip()
+    for row in variants:
+        row_label = str(row.get("label") or "").strip()
+        if row_label == label:
+            price = float(row.get("price"))
+            weight_kg = row.get("weight_kg")
+            name = f"{item.name} - {row_label}" if row_label else item.name
+            return name, price, float(weight_kg) if weight_kg is not None else None
+    raise HTTPException(400, f'"{item.name}" variant is not available.')
 
 
 class OrderItemOut(BaseModel):
@@ -2112,17 +2132,18 @@ def _build_order_draft(
         di = overrides.get(it.master_item_id)
         if di is not None and not di.is_available:
             raise HTTPException(400, f'"{m.name}" is currently out of stock.')
-        price = float(di.price) if di is not None else float(m.price)
+        variant_name, variant_price, variant_weight = _selected_variant(
+            m, it.variant_label
+        )
+        price = float(di.price) if di is not None and not it.variant_label else variant_price
         line_total = round(price * it.quantity, 2)
         subtotal = round(subtotal + line_total, 2)
         lines.append(
             OrderItem(
                 master_item_id=m.id,
-                name_snapshot=m.name,
+                name_snapshot=variant_name,
                 price_snapshot=price,
-                weight_kg_snapshot=(
-                    float(m.weight_kg) if m.weight_kg is not None else None
-                ),
+                weight_kg_snapshot=variant_weight,
                 quantity=it.quantity,
                 line_total=line_total,
             )
@@ -2365,7 +2386,10 @@ def _build_kiosk_draft(
         ki = overrides.get(it.master_item_id)
         if ki is not None and not ki.is_available:
             raise HTTPException(400, f'"{m.name}" is currently out of stock.')
-        price = float(ki.price) if ki is not None else float(m.price)
+        variant_name, variant_price, variant_weight = _selected_variant(
+            m, it.variant_label
+        )
+        price = float(ki.price) if ki is not None and not it.variant_label else variant_price
         line_total = round(price * it.quantity, 2)
         subtotal = round(subtotal + line_total, 2)
         if m.prep_time_minutes and m.prep_time_minutes > max_prep:
@@ -2373,9 +2397,9 @@ def _build_kiosk_draft(
         lines.append(
             OrderItem(
                 master_item_id=m.id,
-                name_snapshot=m.name,
+                name_snapshot=variant_name,
                 price_snapshot=price,
-                weight_kg_snapshot=None,
+                weight_kg_snapshot=variant_weight,
                 quantity=it.quantity,
                 line_total=line_total,
             )
@@ -2506,15 +2530,15 @@ def accessories_checkout(
         m = masters.get(it.master_item_id)
         if not m:
             raise HTTPException(400, f"Item {it.master_item_id} is not available.")
-        price = float(m.price)
+        variant_name, price, variant_weight = _selected_variant(m, it.variant_label)
         line_total = round(price * it.quantity, 2)
         subtotal = round(subtotal + line_total, 2)
         lines.append(
             OrderItem(
                 master_item_id=m.id,
-                name_snapshot=m.name,
+                name_snapshot=variant_name,
                 price_snapshot=price,
-                weight_kg_snapshot=None,
+                weight_kg_snapshot=variant_weight,
                 quantity=it.quantity,
                 line_total=line_total,
             )
@@ -2634,15 +2658,15 @@ def dry_fish_checkout(
         m = masters.get(it.master_item_id)
         if not m:
             raise HTTPException(400, f"Item {it.master_item_id} is not available.")
-        price = float(m.price)
+        variant_name, price, variant_weight = _selected_variant(m, it.variant_label)
         line_total = round(price * it.quantity, 2)
         subtotal = round(subtotal + line_total, 2)
         lines.append(
             OrderItem(
                 master_item_id=m.id,
-                name_snapshot=m.name,
+                name_snapshot=variant_name,
                 price_snapshot=price,
-                weight_kg_snapshot=None,
+                weight_kg_snapshot=variant_weight,
                 quantity=it.quantity,
                 line_total=line_total,
             )
@@ -2762,15 +2786,15 @@ def pickles_checkout(
         m = masters.get(it.master_item_id)
         if not m:
             raise HTTPException(400, f"Item {it.master_item_id} is not available.")
-        price = float(m.price)
+        variant_name, price, variant_weight = _selected_variant(m, it.variant_label)
         line_total = round(price * it.quantity, 2)
         subtotal = round(subtotal + line_total, 2)
         lines.append(
             OrderItem(
                 master_item_id=m.id,
-                name_snapshot=m.name,
+                name_snapshot=variant_name,
                 price_snapshot=price,
-                weight_kg_snapshot=None,
+                weight_kg_snapshot=variant_weight,
                 quantity=it.quantity,
                 line_total=line_total,
             )
