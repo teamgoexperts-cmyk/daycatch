@@ -97,7 +97,7 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 
 EASEBUZZ_KEY = os.getenv("EASEBUZZ_KEY", "")
 EASEBUZZ_SALT = os.getenv("EASEBUZZ_SALT", "")
-EASEBUZZ_ENV = os.getenv("EASEBUZZ_ENV", "test")
+EASEBUZZ_ENV = os.getenv("EASEBUZZ_ENV", "production")
 EASEBUZZ_SURL = os.getenv("EASEBUZZ_SURL", "https://daycatch-rkmr.onrender.com/payment/success")
 EASEBUZZ_FURL = os.getenv("EASEBUZZ_FURL", "https://daycatch-rkmr.onrender.com/payment/failure")
 
@@ -120,7 +120,7 @@ def _require_payments():
 def _initiate_easebuzz_payment(order_id: int, amount: float, user: User) -> dict:
     txnid = f"DC_{order_id}_{int(datetime.now().timestamp())}"
     amt_str = f"{amount:.2f}"
-    productinfo = f"DayCatch Order #{order_id}"
+    productinfo = f"DayCatch Order {order_id}"
     firstname = user.first_name or "Customer"
     email = "customer@daycatch.in"
     raw_phone = re.sub(r"\D", "", user.phone or "")
