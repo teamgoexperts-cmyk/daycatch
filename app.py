@@ -116,7 +116,7 @@ def _require_payments():
 
 
 def _initiate_easebuzz_payment(order_id: int, amount: float, user: User) -> dict:
-    txnid = f"DC_{order_id}_{int(time.time())}"
+    txnid = f"DC_{order_id}_{int(datetime.now().timestamp())}"
     amt_str = f"{amount:.2f}"
     productinfo = f"DayCatch Order #{order_id}"
     firstname = user.first_name or "Customer"
