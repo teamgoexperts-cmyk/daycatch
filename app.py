@@ -623,6 +623,7 @@ class MenuItemOut(BaseModel):
     image_url: Optional[str] = None
     # Typical weight per unit, kg. Null for accessories.
     weight_kg: Optional[float] = None
+    variants: Optional[list[dict]] = None
     # Prep time in minutes — kiosk (fish_and_chips) items only. Null elsewhere.
     prep_time_minutes: Optional[int] = None
     is_active: bool
@@ -635,6 +636,7 @@ class MenuItemIn(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     weight_kg: Optional[float] = None
+    variants: Optional[list[dict]] = None
     prep_time_minutes: Optional[int] = None
 
 
@@ -645,8 +647,37 @@ class MenuItemUpdate(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     weight_kg: Optional[float] = None
+    variants: Optional[list[dict]] = None
     prep_time_minutes: Optional[int] = None
     is_active: Optional[bool] = None
+
+
+def _normalize_menu_variants(raw: Optional[list[dict]]) -> Optional[list[dict]]:
+    if raw is None:
+        return None
+    variants = []
+    for index, row in enumerate(raw, start=1):
+        label = str(row.get("label") or "").strip()
+        try:
+            price = float(row.get("price"))
+            weight_kg = float(row.get("weight_kg"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Variant {index} needs a valid price and weight.")
+        if price < 0:
+            raise HTTPException(400, f"Variant {index} price must be zero or more.")
+        if weight_kg <= 0:
+            raise HTTPException(400, f"Variant {index} weight must be greater than zero.")
+        if not label:
+            grams = round(weight_kg * 1000)
+            label = f"{grams} g" if weight_kg < 1 else f"{weight_kg:g} kg"
+        variants.append(
+            {
+                "label": label,
+                "price": round(price, 2),
+                "weight_kg": round(weight_kg, 3),
+            }
+        )
+    return variants or None
 
 
 @app.post("/admin/upload")
@@ -727,13 +758,17 @@ def admin_create_menu_item(
         raise HTTPException(400, "Name is required.")
     if body.price < 0:
         raise HTTPException(400, "Price must be zero or more.")
+    variants = _normalize_menu_variants(body.variants)
+    price = variants[0]["price"] if variants else body.price
+    weight_kg = variants[0]["weight_kg"] if variants else body.weight_kg
     item = MenuItem(
         category=body.category,
         name=name,
-        price=body.price,
+        price=price,
         description=(body.description or "").strip() or None,
         image_url=body.image_url or None,
-        weight_kg=body.weight_kg,
+        weight_kg=weight_kg,
+        variants=variants,
         prep_time_minutes=body.prep_time_minutes,
     )
     db.add(item)
@@ -763,6 +798,12 @@ def admin_update_menu_item(
         if body.price < 0:
             raise HTTPException(400, "Price must be zero or more.")
         item.price = body.price
+    if "variants" in body.model_fields_set:
+        variants = _normalize_menu_variants(body.variants)
+        item.variants = variants
+        if variants:
+            item.price = variants[0]["price"]
+            item.weight_kg = variants[0]["weight_kg"]
     if body.description is not None:
         item.description = body.description.strip() or None
     if body.image_url is not None:
@@ -1066,6 +1107,7 @@ class CustomerMenuItem(BaseModel):
     # Typical weight per unit, kg. Surfaced so the mobile app can show
     # "500 g" next to the price for fish items.
     weight_kg: Optional[float] = None
+    variants: Optional[list[dict]] = None
     # Prep time in minutes — kiosk (fish_and_chips) items. The kiosk cart uses
     # the max across ordered items to compute the dining time (now + max).
     prep_time_minutes: Optional[int] = None
@@ -1205,6 +1247,7 @@ def customer_menu(
                 weight_kg=(
                     float(m.weight_kg) if m.weight_kg is not None else None
                 ),
+                variants=m.variants,
             )
         )
 
@@ -1258,6 +1301,7 @@ def _store_item(m: MenuItem, price: float) -> CustomerMenuItem:
         image_url=m.image_url,
         price=price,
         weight_kg=float(m.weight_kg) if m.weight_kg is not None else None,
+        variants=m.variants,
         prep_time_minutes=m.prep_time_minutes,
     )
 

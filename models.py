@@ -8,6 +8,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Integer,
+    JSON,
     LargeBinary,
     MetaData,
     Numeric,
@@ -71,6 +72,9 @@ class MenuItem(Base):
     # weight, so capturing this on the master menu is what drives the
     # admin rollup. Nullable so accessories (and any old rows) stay valid.
     weight_kg = Column(Numeric(8, 3), nullable=True)
+    # Optional sellable sizes for the same product, e.g. 1 kg, 500 g, 250 g.
+    # The first variant mirrors price/weight_kg so older app flows keep working.
+    variants = Column(JSON, nullable=True)
     # Preparation time in minutes — only meaningful for kiosk (fish_and_chips)
     # items. The kiosk cart sets the dining time to now + the MAX prep time
     # across the ordered items. Nullable; treated as 0 when unset.

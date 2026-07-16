@@ -61,6 +61,7 @@ def migrate_columns() -> None:
         # rollup. Snapshotted onto order_items at place-order time so later
         # weight edits don't retroactively skew historical orders.
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".menu_items  ADD COLUMN IF NOT EXISTS weight_kg          NUMERIC(8, 3)'))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA}".menu_items  ADD COLUMN IF NOT EXISTS variants           JSONB'))
         # Kiosk (fish_and_chips) prep time in minutes; drives dine-in timing.
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".menu_items  ADD COLUMN IF NOT EXISTS prep_time_minutes  INTEGER'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".order_items ADD COLUMN IF NOT EXISTS weight_kg_snapshot NUMERIC(8, 3)'))
