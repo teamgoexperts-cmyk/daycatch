@@ -2661,6 +2661,40 @@ def confirm_payment(
     return _order_dto(order, items, distributor)
 
 
+@app.post("/customer/orders/{order_id}/confirm-easebuzz", response_model=OrderOut)
+def confirm_easebuzz_payment(
+    order_id: int,
+    user: User = Depends(customer_required),
+    db: Session = Depends(get_db),
+) -> OrderOut:
+    """Confirm Easebuzz payment and set order status to paid."""
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.user_id == user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(404, "Order not found.")
+
+    if order.payment_status != "paid":
+        order.payment_status = "paid"
+        db.commit()
+        db.refresh(order)
+        if order.coupon_code:
+            _log_coupon_usage(order.user_id, order.coupon_code, order.id, db)
+
+    items = (
+        db.query(OrderItem)
+        .filter(OrderItem.order_id == order.id)
+        .order_by(OrderItem.id)
+        .all()
+    )
+    distributor = (
+        db.query(User).filter(User.id == order.distributor_user_id).first()
+    )
+    return _order_dto(order, items, distributor)
+
+
 @app.post("/webhooks/razorpay", include_in_schema=False)
 async def razorpay_webhook(
     request: Request, db: Session = Depends(get_db)
