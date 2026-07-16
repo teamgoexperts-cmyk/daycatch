@@ -92,6 +92,14 @@ class MenuItem(Base):
     )
 
 
+class MenuCategorySetting(Base):
+    __tablename__ = "menu_category_settings"
+
+    category = Column(String, primary_key=True)
+    weight_enabled = Column(Boolean, default=False, nullable=False)
+    prep_enabled = Column(Boolean, default=False, nullable=False)
+
+
 class UploadedImage(Base):
     """Admin-uploaded image bytes, stored in the DB so they survive deploys.
 
@@ -173,16 +181,20 @@ class Kiosk(Base):
     open_24h = Column(Boolean, default=True, nullable=False)
     opening_time = Column(String(5), nullable=True)  # HH:MM local kiosk time
     closing_time = Column(String(5), nullable=True)  # HH:MM local kiosk time
+    open_days = Column(JSON, nullable=True)  # 0=Mon ... 6=Sun
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
     @property
     def hours_label(self):
+        days = self.open_days if isinstance(self.open_days, list) else list(range(7))
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        days_label = "All week" if len(days) == 7 else ", ".join(day_names[d] for d in days if isinstance(d, int) and 0 <= d <= 6)
         if self.open_24h:
-            return "Open 24 hours"
+            return f"Open 24 hours ({days_label})"
         if self.opening_time and self.closing_time:
-            return f"{self.opening_time}-{self.closing_time}"
+            return f"{self.opening_time}-{self.closing_time} ({days_label})"
         return "Hours not set"
 
 

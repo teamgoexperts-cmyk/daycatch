@@ -27,6 +27,7 @@ from models import (
     DistributorMenuItem,
     Kiosk,
     KioskMenuItem,
+    MenuCategorySetting,
     MenuItem,
     Order,
     OrderItem,
@@ -604,6 +605,13 @@ Category = Literal[
     "pickles",
     "fish_and_chips",
 ]
+DEFAULT_CATEGORY_FIELD_SETTINGS = {
+    category: {
+        "weight_enabled": category in ("fresh_fish", "frozen_fish"),
+        "prep_enabled": category == "fish_and_chips",
+    }
+    for category in CATEGORIES
+}
 
 # Sentinel shop-name snapshots for central-admin orders (no distributor / kiosk).
 # Accessories, dry fish and pickles all ship from DayCatch, so the admin
@@ -635,6 +643,18 @@ class MenuItemOut(BaseModel):
     # Prep time in minutes — kiosk (fish_and_chips) items only. Null elsewhere.
     prep_time_minutes: Optional[int] = None
     is_active: bool
+
+
+class MenuCategorySettingOut(BaseModel):
+    category: Category
+    weight_enabled: bool
+    prep_enabled: bool
+
+
+class MenuCategorySettingUpdate(BaseModel):
+    category: Category
+    weight_enabled: Optional[bool] = None
+    prep_enabled: Optional[bool] = None
 
 
 class MenuItemIn(BaseModel):
@@ -721,6 +741,63 @@ def _menu_item_out(item: MenuItem) -> MenuItemOut:
         prep_time_minutes=item.prep_time_minutes,
         is_active=item.is_active,
     )
+
+
+def _menu_category_setting_out(
+    category: str, setting: Optional[MenuCategorySetting] = None
+) -> MenuCategorySettingOut:
+    defaults = DEFAULT_CATEGORY_FIELD_SETTINGS[category]
+    return MenuCategorySettingOut(
+        category=category,
+        weight_enabled=(
+            setting.weight_enabled if setting is not None else defaults["weight_enabled"]
+        ),
+        prep_enabled=(
+            setting.prep_enabled if setting is not None else defaults["prep_enabled"]
+        ),
+    )
+
+
+@app.get("/admin/menu-category-settings", response_model=list[MenuCategorySettingOut])
+def admin_list_menu_category_settings(
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> list[MenuCategorySettingOut]:
+    rows = {
+        row.category: row
+        for row in db.query(MenuCategorySetting)
+        .filter(MenuCategorySetting.category.in_(CATEGORIES))
+        .all()
+    }
+    return [_menu_category_setting_out(category, rows.get(category)) for category in CATEGORIES]
+
+
+@app.patch("/admin/menu-category-settings", response_model=MenuCategorySettingOut)
+def admin_update_menu_category_setting(
+    body: MenuCategorySettingUpdate,
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> MenuCategorySettingOut:
+    setting = (
+        db.query(MenuCategorySetting)
+        .filter(MenuCategorySetting.category == body.category)
+        .first()
+    )
+    if setting is None:
+        defaults = DEFAULT_CATEGORY_FIELD_SETTINGS[body.category]
+        setting = MenuCategorySetting(
+            category=body.category,
+            weight_enabled=defaults["weight_enabled"],
+            prep_enabled=defaults["prep_enabled"],
+        )
+        db.add(setting)
+    if body.weight_enabled is not None:
+        setting.weight_enabled = body.weight_enabled
+    if body.prep_enabled is not None:
+        setting.prep_enabled = body.prep_enabled
+    db.commit()
+    db.refresh(setting)
+    return _menu_category_setting_out(body.category, setting)
 
 
 @app.post("/admin/upload")
@@ -851,14 +928,16 @@ def admin_update_menu_item(
         item.description = body.description.strip() or None
     if body.image_url is not None:
         item.image_url = body.image_url or None
-    if body.weight_kg is not None:
+    if "weight_kg" in body.model_fields_set:
         # Pydantic gives us 0 explicitly if the admin clears the field; persist
         # null if the value is exactly 0 so the rollup shows it as "no weight".
-        item.weight_kg = body.weight_kg if body.weight_kg > 0 else None
-    if body.prep_time_minutes is not None:
+        item.weight_kg = body.weight_kg if body.weight_kg and body.weight_kg > 0 else None
+    if "prep_time_minutes" in body.model_fields_set:
         # 0 clears it (treated as "no prep time" → contributes 0 to dining time).
         item.prep_time_minutes = (
-            body.prep_time_minutes if body.prep_time_minutes > 0 else None
+            body.prep_time_minutes
+            if body.prep_time_minutes and body.prep_time_minutes > 0
+            else None
         )
     if body.is_active is not None:
         item.is_active = body.is_active
@@ -912,14 +991,48 @@ def _minutes(value: str) -> int:
     return hh * 60 + mm
 
 
+def _normalize_open_days(raw: Optional[list[int]]) -> list[int]:
+    if raw is None:
+        return list(range(7))
+    days: list[int] = []
+    for value in raw:
+        try:
+            day = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Open days must be numbers from 0 to 6.")
+        if day < 0 or day > 6:
+            raise HTTPException(400, "Open days must be numbers from 0 to 6.")
+        if day not in days:
+            days.append(day)
+    if not days:
+        raise HTTPException(400, "Select at least one open day.")
+    return sorted(days)
+
+
+def _kiosk_open_days(k: Kiosk) -> list[int]:
+    if isinstance(k.open_days, list) and k.open_days:
+        return _normalize_open_days(k.open_days)
+    return list(range(7))
+
+
+def _kiosk_days_label(k: Kiosk) -> str:
+    days = _kiosk_open_days(k)
+    if len(days) == 7:
+        return "All week"
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return ", ".join(names[d] for d in days)
+
+
 def _kiosk_in_hours(k: Kiosk, now_utc: Optional[datetime] = None) -> bool:
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(_IST)
+    if now.weekday() not in _kiosk_open_days(k):
+        return False
     if k.open_24h:
         return True
     if not k.opening_time or not k.closing_time:
         return False
     start = _minutes(k.opening_time)
     end = _minutes(k.closing_time)
-    now = (now_utc or datetime.now(timezone.utc)).astimezone(_IST)
     current = now.hour * 60 + now.minute
     if start == end:
         return False
@@ -935,10 +1048,11 @@ def _effective_kiosk_operation_status(k: Kiosk) -> str:
 
 
 def _kiosk_hours_label(k: Kiosk) -> str:
+    days_label = _kiosk_days_label(k)
     if k.open_24h:
-        return "Open 24 hours"
+        return f"Open 24 hours ({days_label})"
     if k.opening_time and k.closing_time:
-        return f"{k.opening_time}-{k.closing_time}"
+        return f"{k.opening_time}-{k.closing_time} ({days_label})"
     return "Hours not set"
 
 
@@ -1188,6 +1302,7 @@ class CustomerMenuShop(BaseModel):
     open_24h: Optional[bool] = None
     opening_time: Optional[str] = None
     closing_time: Optional[str] = None
+    open_days: Optional[list[int]] = None
     hours_label: Optional[str] = None
 
 
@@ -1526,6 +1641,7 @@ def customer_storefront(
                 open_24h=k.open_24h,
                 opening_time=k.opening_time,
                 closing_time=k.closing_time,
+                open_days=_kiosk_open_days(k),
                 hours_label=_kiosk_hours_label(k),
             ),
             items=kitems,
@@ -3417,6 +3533,7 @@ class KioskOut(BaseModel):
     open_24h: bool = True
     opening_time: Optional[str] = None
     closing_time: Optional[str] = None
+    open_days: Optional[list[int]] = None
     hours_label: Optional[str] = None
 
 
@@ -3430,6 +3547,7 @@ class KioskIn(BaseModel):
     open_24h: bool = True
     opening_time: Optional[str] = None
     closing_time: Optional[str] = None
+    open_days: Optional[list[int]] = None
 
 
 class KioskUpdate(BaseModel):
@@ -3443,6 +3561,7 @@ class KioskUpdate(BaseModel):
     open_24h: Optional[bool] = None
     opening_time: Optional[str] = None
     closing_time: Optional[str] = None
+    open_days: Optional[list[int]] = None
 
 
 @app.get("/kiosk/shop", response_model=Optional[KioskOut])
@@ -3473,6 +3592,7 @@ def upsert_my_kiosk(
     k.lon = body.lon
     k.radius = body.radius
     k.open_24h = body.open_24h
+    k.open_days = _normalize_open_days(body.open_days)
     if body.open_24h:
         k.opening_time = None
         k.closing_time = None
@@ -3518,6 +3638,8 @@ def patch_my_kiosk(
         k.opening_time = _valid_hhmm(data.pop("opening_time"))
     if "closing_time" in data:
         k.closing_time = _valid_hhmm(data.pop("closing_time"))
+    if "open_days" in data:
+        k.open_days = _normalize_open_days(data.pop("open_days"))
     if not k.open_24h and (not k.opening_time or not k.closing_time):
         raise HTTPException(400, "Opening and closing times are required.")
     if "address" in data:
@@ -3758,6 +3880,7 @@ class AdminKioskOut(BaseModel):
     open_24h: bool = True
     opening_time: Optional[str] = None
     closing_time: Optional[str] = None
+    open_days: Optional[list[int]] = None
     hours_label: Optional[str] = None
     is_open_now: bool = False
 
@@ -3786,6 +3909,7 @@ def _admin_kiosk_dto(k: Kiosk, user: Optional[User]) -> AdminKioskOut:
         open_24h=k.open_24h,
         opening_time=k.opening_time,
         closing_time=k.closing_time,
+        open_days=_kiosk_open_days(k),
         hours_label=_kiosk_hours_label(k),
         is_open_now=_effective_kiosk_operation_status(k) == "open",
     )
