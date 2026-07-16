@@ -4,6 +4,8 @@ import re
 import secrets
 import urllib.error
 import urllib.request
+import hashlib
+import requests
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
