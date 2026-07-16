@@ -88,20 +88,137 @@ MOBILE_RE = re.compile(r"^\+91[6-9]\d{9}$")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z\s'-]{0,49}$")
 
 
-# ============ Razorpay client ============
-# Built once at import. None when keys aren't configured (e.g. local dev with
-# payments off) — endpoints that need it return 503 via _require_razorpay().
-_razorpay_client: Optional[razorpay.Client] = (
+# ============ Razorpay & Easebuzz Payments ============
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+
+EASEBUZZ_KEY = os.getenv("EASEBUZZ_KEY", "")
+EASEBUZZ_SALT = os.getenv("EASEBUZZ_SALT", "")
+EASEBUZZ_ENV = os.getenv("EASEBUZZ_ENV", "test")
+EASEBUZZ_SURL = os.getenv("EASEBUZZ_SURL", "https://daycatch-rkmr.onrender.com/payment/success")
+EASEBUZZ_FURL = os.getenv("EASEBUZZ_FURL", "https://daycatch-rkmr.onrender.com/payment/failure")
+
+_razorpay_client = (
     razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
     if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET
     else None
 )
 
 
-def _require_razorpay() -> razorpay.Client:
-    if _razorpay_client is None:
+def check_payments_configured() -> bool:
+    return bool(_razorpay_client is not None) or bool(EASEBUZZ_KEY and EASEBUZZ_SALT)
+
+
+def _require_payments():
+    if not check_payments_configured():
         raise HTTPException(503, "Payments are not configured.")
-    return _razorpay_client
+
+
+def _initiate_easebuzz_payment(order_id: int, amount: float, user: User) -> dict:
+    txnid = f"DC_{order_id}_{int(time.time())}"
+    amt_str = f"{amount:.2f}"
+    productinfo = f"DayCatch Order #{order_id}"
+    firstname = user.first_name or "Customer"
+    email = user.email or "customer@daycatch.in"
+    phone = user.phone or ""
+    
+    # Hash sequence: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|salt
+    hash_str = f"{EASEBUZZ_KEY}|{txnid}|{amt_str}|{productinfo}|{firstname}|{email}|||||||||||{EASEBUZZ_SALT}"
+    hash_val = hashlib.sha512(hash_str.encode("utf-8")).hexdigest()
+    
+    payload = {
+        "key": EASEBUZZ_KEY,
+        "txnid": txnid,
+        "amount": amt_str,
+        "productinfo": productinfo,
+        "firstname": firstname,
+        "email": email,
+        "phone": phone,
+        "surl": EASEBUZZ_SURL,
+        "furl": EASEBUZZ_FURL,
+        "hash": hash_val,
+        "udf1": "", "udf2": "", "udf3": "", "udf4": "", "udf5": "",
+        "udf6": "", "udf7": "", "udf8": "", "udf9": "", "udf10": ""
+    }
+    
+    url = (
+        "https://pay.easebuzz.in/payment/initiateLink"
+        if EASEBUZZ_ENV == "production"
+        else "https://testpay.easebuzz.in/payment/initiateLink"
+    )
+    
+    try:
+        r = requests.post(url, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        res = r.json()
+        if res.get("status") == 1:
+            access_key = res.get("data")
+            base_pay_url = (
+                "https://pay.easebuzz.in/pay/"
+                if EASEBUZZ_ENV == "production"
+                else "https://testpay.easebuzz.in/pay/"
+            )
+            return {
+                "easebuzz_access_key": access_key,
+                "easebuzz_payment_url": f"{base_pay_url}{access_key}"
+            }
+        else:
+            raise HTTPException(400, f"Easebuzz initiation failed: {res.get('message') or res.get('data')}")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(400, f"Error calling Easebuzz API: {str(e)}")
+
+
+def _create_checkout_session(order: Order, amount_paise: int, final_amount: float, user: User, db: Session) -> CheckoutOut:
+    _require_payments()
+    
+    if EASEBUZZ_KEY and EASEBUZZ_SALT:
+        try:
+            eb = _initiate_easebuzz_payment(order.id, final_amount, user)
+            order.razorpay_order_id = eb["easebuzz_access_key"]
+            db.commit()
+            return CheckoutOut(
+                order_id=order.id,
+                amount=amount_paise,
+                currency="INR",
+                key_id=EASEBUZZ_KEY,
+                easebuzz_access_key=eb["easebuzz_access_key"],
+                easebuzz_payment_url=eb["easebuzz_payment_url"],
+            )
+        except Exception as e:
+            db.rollback()
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(502, f"Could not start Easebuzz payment: {e}")
+    else:
+        client = _razorpay_client
+        try:
+            rzp_order = client.order.create(
+                {
+                    "amount": amount_paise,
+                    "currency": "INR",
+                    "receipt": f"daycatch_order_{order.id}",
+                    "payment_capture": 1,
+                    "notes": {
+                        "daycatch_order_id": str(order.id),
+                        "customer_user_id": str(user.id),
+                    },
+                }
+            )
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(502, f"Could not start Razorpay payment: {e}")
+            
+        order.razorpay_order_id = rzp_order["id"]
+        db.commit()
+        return CheckoutOut(
+            order_id=order.id,
+            razorpay_order_id=rzp_order["id"],
+            amount=amount_paise,
+            currency="INR",
+            key_id=RAZORPAY_KEY_ID,
+        )
 
 
 # ============ Helpers ============
@@ -2277,13 +2394,13 @@ def _apply_coupon_to_checkout(
 
 
 class CheckoutOut(BaseModel):
-    # Everything the app needs to open Razorpay Checkout. The DayCatch order
-    # already exists (payment_status="created") and is finalised on payment.
     order_id: int
-    razorpay_order_id: str
-    amount: int  # in paise (Razorpay's smallest-unit convention)
+    amount: int  # in paise
     currency: str
     key_id: str  # public Key Id — safe to hand to the client
+    razorpay_order_id: Optional[str] = None
+    easebuzz_payment_url: Optional[str] = None
+    easebuzz_access_key: Optional[str] = None
 
 
 class ConfirmPaymentIn(BaseModel):
@@ -2441,7 +2558,7 @@ def checkout_order(
     in payment_status="created" (hidden from fulfillment), and open a Razorpay
     order with auto-capture. The app then opens checkout with the returned ids.
     """
-    client = _require_razorpay()
+    _require_payments()
     shop, addr, subtotal, lines, delivery_date = _build_order_draft(body, user, db)
 
     # Apply coupon if provided
@@ -2477,34 +2594,7 @@ def checkout_order(
         ln.order_id = order.id
         db.add(ln)
 
-    try:
-        rzp_order = client.order.create(
-            {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": f"daycatch_order_{order.id}",
-                # 1 = auto-capture the moment the payment authorises, so we
-                # never hold an authorised-but-uncaptured payment.
-                "payment_capture": 1,
-                "notes": {
-                    "daycatch_order_id": str(order.id),
-                    "customer_user_id": str(user.id),
-                },
-            }
-        )
-    except Exception as e:  # noqa: BLE001 — surface any Razorpay failure
-        db.rollback()
-        raise HTTPException(502, f"Could not start payment: {e}")
-
-    order.razorpay_order_id = rzp_order["id"]
-    db.commit()
-    return CheckoutOut(
-        order_id=order.id,
-        razorpay_order_id=rzp_order["id"],
-        amount=amount_paise,
-        currency="INR",
-        key_id=RAZORPAY_KEY_ID,
-    )
+    return _create_checkout_session(order, amount_paise, final_amount, user, db)
 
 
 @app.post("/customer/orders/{order_id}/confirm", response_model=OrderOut)
@@ -2698,7 +2788,7 @@ def kiosk_checkout(
     user: User = Depends(customer_required),
     db: Session = Depends(get_db),
 ) -> CheckoutOut:
-    client = _require_razorpay()
+    _require_payments()
     k, subtotal, max_prep, lines = _build_kiosk_draft(
         body.lat, body.lon, body.items, db
     )
@@ -2737,33 +2827,7 @@ def kiosk_checkout(
         ln.order_id = order.id
         db.add(ln)
 
-    try:
-        rzp_order = client.order.create(
-            {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": f"daycatch_order_{order.id}",
-                "payment_capture": 1,
-                "notes": {
-                    "daycatch_order_id": str(order.id),
-                    "customer_user_id": str(user.id),
-                    "kind": "kiosk",
-                },
-            }
-        )
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Could not start payment: {e}")
-
-    order.razorpay_order_id = rzp_order["id"]
-    db.commit()
-    return CheckoutOut(
-        order_id=order.id,
-        razorpay_order_id=rzp_order["id"],
-        amount=amount_paise,
-        currency="INR",
-        key_id=RAZORPAY_KEY_ID,
-    )
+    return _create_checkout_session(order, amount_paise, final_amount, user, db)
 
 
 # ============ Customer: accessories checkout (shipped by central admin) ============
@@ -2775,7 +2839,7 @@ def accessories_checkout(
     user: User = Depends(customer_required),
     db: Session = Depends(get_db),
 ) -> CheckoutOut:
-    client = _require_razorpay()
+    _require_payments()
     if not body.items:
         raise HTTPException(400, "Cart is empty.")
 
@@ -2869,33 +2933,7 @@ def accessories_checkout(
         ln.order_id = order.id
         db.add(ln)
 
-    try:
-        rzp_order = client.order.create(
-            {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": f"daycatch_order_{order.id}",
-                "payment_capture": 1,
-                "notes": {
-                    "daycatch_order_id": str(order.id),
-                    "customer_user_id": str(user.id),
-                    "kind": "accessories",
-                },
-            }
-        )
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Could not start payment: {e}")
-
-    order.razorpay_order_id = rzp_order["id"]
-    db.commit()
-    return CheckoutOut(
-        order_id=order.id,
-        razorpay_order_id=rzp_order["id"],
-        amount=amount_paise,
-        currency="INR",
-        key_id=RAZORPAY_KEY_ID,
-    )
+    return _create_checkout_session(order, amount_paise, final_amount, user, db)
 
 
 # ============ Customer: dry-fish checkout (shipped by central admin) ============
@@ -2909,7 +2947,7 @@ def dry_fish_checkout(
     user: User = Depends(customer_required),
     db: Session = Depends(get_db),
 ) -> CheckoutOut:
-    client = _require_razorpay()
+    _require_payments()
     if not body.items:
         raise HTTPException(400, "Cart is empty.")
 
@@ -3003,33 +3041,7 @@ def dry_fish_checkout(
         ln.order_id = order.id
         db.add(ln)
 
-    try:
-        rzp_order = client.order.create(
-            {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": f"daycatch_order_{order.id}",
-                "payment_capture": 1,
-                "notes": {
-                    "daycatch_order_id": str(order.id),
-                    "customer_user_id": str(user.id),
-                    "kind": "dry_fish",
-                },
-            }
-        )
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Could not start payment: {e}")
-
-    order.razorpay_order_id = rzp_order["id"]
-    db.commit()
-    return CheckoutOut(
-        order_id=order.id,
-        razorpay_order_id=rzp_order["id"],
-        amount=amount_paise,
-        currency="INR",
-        key_id=RAZORPAY_KEY_ID,
-    )
+    return _create_checkout_session(order, amount_paise, final_amount, user, db)
 
 
 # ============ Customer: pickles checkout (shipped by central admin) ============
@@ -3043,7 +3055,7 @@ def pickles_checkout(
     user: User = Depends(customer_required),
     db: Session = Depends(get_db),
 ) -> CheckoutOut:
-    client = _require_razorpay()
+    _require_payments()
     if not body.items:
         raise HTTPException(400, "Cart is empty.")
 
@@ -3137,33 +3149,7 @@ def pickles_checkout(
         ln.order_id = order.id
         db.add(ln)
 
-    try:
-        rzp_order = client.order.create(
-            {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": f"daycatch_order_{order.id}",
-                "payment_capture": 1,
-                "notes": {
-                    "daycatch_order_id": str(order.id),
-                    "customer_user_id": str(user.id),
-                    "kind": "pickles",
-                },
-            }
-        )
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Could not start payment: {e}")
-
-    order.razorpay_order_id = rzp_order["id"]
-    db.commit()
-    return CheckoutOut(
-        order_id=order.id,
-        razorpay_order_id=rzp_order["id"],
-        amount=amount_paise,
-        currency="INR",
-        key_id=RAZORPAY_KEY_ID,
-    )
+    return _create_checkout_session(order, amount_paise, final_amount, user, db)
 
 
 @app.get("/customer/orders", response_model=list[OrderOut])
