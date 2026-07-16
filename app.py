@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from database import get_db
+from migrate import create_schema_and_tables, migrate_columns
 from models import (
     Address,
     DistributorMenuItem,
@@ -170,6 +171,12 @@ class MeOut(BaseModel):
 
 # ============ App ============
 app = FastAPI(title="DayCatch Auth API", version="0.2.0")
+
+
+@app.on_event("startup")
+def ensure_schema_columns() -> None:
+    create_schema_and_tables()
+    migrate_columns()
 
 app.add_middleware(
     CORSMiddleware,
