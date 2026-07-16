@@ -279,6 +279,8 @@ class Order(Base):
     # Kiosk dine-in only: when the order is expected to be ready (now + the max
     # prep time across its items, computed at checkout). Null for fish/accessories.
     dining_at = Column(DateTime, nullable=True)
+    coupon_code = Column(String, nullable=True)
+    discount_amount = Column(Numeric(10, 2), nullable=True)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
@@ -298,3 +300,36 @@ class OrderItem(Base):
     weight_kg_snapshot = Column(Numeric(8, 3), nullable=True)
     quantity = Column(Integer, nullable=False)
     line_total = Column(Numeric(10, 2), nullable=False)
+
+
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String, nullable=False, unique=True, index=True)
+    coupon_type = Column(String, nullable=False)  # welcome | one_time | regular
+    discount_type = Column(String, nullable=False)  # percentage | flat
+    discount_value = Column(Numeric(10, 2), nullable=False)
+    max_discount = Column(Numeric(10, 2), nullable=True)
+    min_bill_amount = Column(Numeric(10, 2), nullable=True)
+    applicable_categories = Column(JSON, nullable=True)
+    applicable_products = Column(JSON, nullable=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    kiosk_user_id = Column(Integer, nullable=True, index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class CouponUsage(Base):
+    __tablename__ = "coupon_usages"
+
+    id = Column(Integer, primary_key=True)
+    coupon_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    order_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )

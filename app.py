@@ -35,6 +35,8 @@ from models import (
     Shop,
     UploadedImage,
     User,
+    Coupon,
+    CouponUsage,
 )
 
 load_dotenv()
@@ -969,6 +971,91 @@ def admin_delete_menu_item(
     return Response(status_code=204)
 
 
+# ============ Admin: coupons ============
+@app.get("/admin/coupons", response_model=list[CouponOut])
+def list_admin_coupons(
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> list[CouponOut]:
+    coupons = db.query(Coupon).order_by(Coupon.id.desc()).all()
+    return coupons
+
+
+@app.post("/admin/coupons", response_model=CouponOut, status_code=201)
+def create_admin_coupon(
+    body: CouponIn,
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+    if existing:
+        raise HTTPException(400, "Coupon code already exists.")
+    coupon = Coupon(
+        code=body.code.upper(),
+        coupon_type=body.coupon_type,
+        discount_type=body.discount_type,
+        discount_value=body.discount_value,
+        max_discount=body.max_discount,
+        min_bill_amount=body.min_bill_amount,
+        applicable_categories=body.applicable_categories,
+        applicable_products=body.applicable_products,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        kiosk_user_id=None,
+        is_active=body.is_active if body.is_active is not None else True,
+    )
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.patch("/admin/coupons/{coupon_id}", response_model=CouponOut)
+def update_admin_coupon(
+    coupon_id: int,
+    body: CouponIn,
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found.")
+    
+    if body.code.upper() != coupon.code:
+        existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+        if existing:
+            raise HTTPException(400, "Coupon code already exists.")
+            
+    coupon.code = body.code.upper()
+    coupon.coupon_type = body.coupon_type
+    coupon.discount_type = body.discount_type
+    coupon.discount_value = body.discount_value
+    coupon.max_discount = body.max_discount
+    coupon.min_bill_amount = body.min_bill_amount
+    coupon.applicable_categories = body.applicable_categories
+    coupon.applicable_products = body.applicable_products
+    coupon.start_date = body.start_date
+    coupon.end_date = body.end_date
+    if body.is_active is not None:
+        coupon.is_active = body.is_active
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.delete("/admin/coupons/{coupon_id}", status_code=204)
+def delete_admin_coupon(
+    coupon_id: int,
+    _: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+) -> None:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found.")
+    db.delete(coupon)
+    db.commit()
+
+
 # ============ Distributor: shop ============
 ShopStatus = Literal["active", "inactive"]
 OperationStatus = Literal["open", "closed"]
@@ -1899,6 +1986,7 @@ class OrderIn(BaseModel):
     postal_address: str | None = None
     lat: float | None = None
     lon: float | None = None
+    coupon_code: Optional[str] = None
 
 
 def _selected_variant(
@@ -1955,6 +2043,9 @@ class OrderOut(BaseModel):
     delivery_date: Optional[date] = None
     # Kiosk dine-in only: expected-ready time.
     dining_at: Optional[datetime] = None
+    coupon_code: Optional[str] = None
+    discount_amount: float = 0.0
+    total: float = 0.0
     created_at: datetime
     items: list[OrderItemOut]
 
@@ -1984,6 +2075,9 @@ def _order_dto(
         kind=_order_kind(o),
         delivery_date=o.delivery_date,
         dining_at=_utc_aware(o.dining_at) if o.dining_at is not None else None,
+        coupon_code=o.coupon_code,
+        discount_amount=float(o.discount_amount or 0.0),
+        total=float(o.subtotal) - float(o.discount_amount or 0.0),
         created_at=_utc_aware(o.created_at),
         items=[
             OrderItemOut(
@@ -2001,6 +2095,185 @@ def _order_dto(
             for i in items
         ],
     )
+
+
+class CouponIn(BaseModel):
+    code: str
+    coupon_type: str  # welcome | one_time | regular
+    discount_type: str  # percentage | flat
+    discount_value: float
+    max_discount: Optional[float] = None
+    min_bill_amount: Optional[float] = None
+    applicable_categories: Optional[list[str]] = None
+    applicable_products: Optional[list[int]] = None
+    start_date: date
+    end_date: date
+    is_active: Optional[bool] = True
+
+
+class CouponOut(BaseModel):
+    id: int
+    code: str
+    coupon_type: str
+    discount_type: str
+    discount_value: float
+    max_discount: Optional[float] = None
+    min_bill_amount: Optional[float] = None
+    applicable_categories: Optional[list[str]] = None
+    applicable_products: Optional[list[int]] = None
+    start_date: date
+    end_date: date
+    kiosk_user_id: Optional[int] = None
+    is_active: bool
+    created_at: datetime
+
+
+class CouponValidateIn(BaseModel):
+    coupon_code: str
+    items: list[OrderItemIn]
+    address_id: Optional[int] = None
+    shop_id: Optional[int] = None
+    is_kiosk: bool = False
+    kiosk_user_id: Optional[int] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+
+class CouponValidateOut(BaseModel):
+    coupon_code: str
+    discount_amount: float
+    subtotal: float
+    final_amount: float
+
+
+def _validate_coupon_for_lines(
+    coupon: Coupon,
+    user: User,
+    subtotal: float,
+    lines: list[OrderItem],
+    is_kiosk_checkout: bool,
+    kiosk_user_id: Optional[int],
+    db: Session
+) -> float:
+    """Validates the coupon against calculated order lines and returns the discount amount.
+    
+    Raises HTTPException on validation errors.
+    """
+    # 1. Dates
+    today = datetime.now(timezone.utc).astimezone(_IST).date()
+    if today < coupon.start_date:
+        raise HTTPException(400, f"This coupon is not active yet (starts on {coupon.start_date}).")
+    if today > coupon.end_date:
+        raise HTTPException(400, "This coupon has expired.")
+
+    # 2. Kiosk check
+    if coupon.kiosk_user_id is not None:
+        if not is_kiosk_checkout or kiosk_user_id != coupon.kiosk_user_id:
+            raise HTTPException(400, "This coupon is only valid at the issuing kiosk.")
+            
+    # 3. Type check (Welcome / One time)
+    if coupon.coupon_type == "welcome":
+        has_paid = db.query(Order).filter(Order.user_id == user.id, Order.payment_status == "paid").first()
+        if has_paid:
+            raise HTTPException(400, "Welcome coupons are only valid for your first order.")
+    elif coupon.coupon_type == "one_time":
+        has_used = db.query(CouponUsage).filter(CouponUsage.coupon_id == coupon.id, CouponUsage.user_id == user.id).first()
+        if has_used:
+            raise HTTPException(400, "This coupon has already been used.")
+
+    # 4. Min bill amount
+    if coupon.min_bill_amount is not None and subtotal < float(coupon.min_bill_amount):
+        raise HTTPException(400, f"Minimum bill amount of Rs.{coupon.min_bill_amount} is required.")
+
+    # 5. Calculate discount based on applicability scope (categories / products)
+    app_cats = coupon.applicable_categories # e.g. ["fresh_fish"] or None
+    app_prods = coupon.applicable_products # e.g. [1, 2, 3] or None
+    
+    has_restrictions = (app_cats and len(app_cats) > 0) or (app_prods and len(app_prods) > 0)
+    
+    if not has_restrictions:
+        # Applies to the whole subtotal
+        eligible_subtotal = subtotal
+    else:
+        # Filter lines
+        eligible_subtotal = 0.0
+        # Resolve master item details to check categories
+        master_ids = [ln.master_item_id for ln in lines]
+        masters = {
+            m.id: m for m in db.query(MenuItem).filter(MenuItem.id.in_(master_ids)).all()
+        }
+        
+        for ln in lines:
+            m = masters.get(ln.master_item_id)
+            if not m:
+                continue
+            is_eligible = False
+            if app_prods and ln.master_item_id in app_prods:
+                is_eligible = True
+            elif app_cats and m.category in app_cats:
+                is_eligible = True
+                
+            if is_eligible:
+                eligible_subtotal += float(ln.line_total)
+                
+        if eligible_subtotal <= 0:
+            raise HTTPException(400, "This coupon is not applicable to the items in your cart.")
+
+    # 6. Compute discount
+    if coupon.discount_type == "flat":
+        discount = float(coupon.discount_value)
+    else: # percentage
+        discount = eligible_subtotal * (float(coupon.discount_value) / 100.0)
+        if coupon.max_discount is not None:
+            discount = min(discount, float(coupon.max_discount))
+            
+    discount = round(discount, 2)
+    # cap at eligible subtotal or total subtotal
+    discount = min(discount, subtotal)
+    return discount
+
+
+def _log_coupon_usage(user_id: int, coupon_code: str, order_id: int, db: Session) -> None:
+    coupon = db.query(Coupon).filter(Coupon.code == coupon_code).first()
+    if not coupon:
+        return
+    # check if usage is already logged (to stay idempotent)
+    existing = db.query(CouponUsage).filter(
+        CouponUsage.coupon_id == coupon.id,
+        CouponUsage.user_id == user_id,
+        CouponUsage.order_id == order_id
+    ).first()
+    if not existing:
+        db.add(CouponUsage(coupon_id=coupon.id, user_id=user_id, order_id=order_id))
+        db.commit()
+
+
+def _apply_coupon_to_checkout(
+    coupon_code: Optional[str],
+    user: User,
+    subtotal: float,
+    lines: list[OrderItem],
+    is_kiosk_checkout: bool,
+    kiosk_user_id: Optional[int],
+    db: Session
+) -> tuple[Optional[str], float, float]:
+    """Helper to apply coupon code to a checkout draft.
+    
+    Returns (coupon_code, discount_amount, final_amount).
+    """
+    discount_amount = 0.0
+    applied_code = None
+    if coupon_code:
+        coupon = db.query(Coupon).filter(Coupon.code == coupon_code.upper(), Coupon.is_active == True).first()
+        if not coupon:
+            raise HTTPException(400, "Invalid coupon code.")
+        discount_amount = _validate_coupon_for_lines(
+            coupon, user, subtotal, lines, is_kiosk_checkout=is_kiosk_checkout, kiosk_user_id=kiosk_user_id, db=db
+        )
+        applied_code = coupon.code
+
+    final_amount = max(0.0, subtotal - discount_amount)
+    return applied_code, discount_amount, final_amount
 
 
 class CheckoutOut(BaseModel):
@@ -2170,7 +2443,12 @@ def checkout_order(
     """
     client = _require_razorpay()
     shop, addr, subtotal, lines, delivery_date = _build_order_draft(body, user, db)
-    amount_paise = int(round(subtotal * 100))
+
+    # Apply coupon if provided
+    coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db
+    )
+    amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
         raise HTTPException(400, "Order total must be greater than zero.")
 
@@ -2187,6 +2465,8 @@ def checkout_order(
         delivery_lat=addr.lat,
         delivery_lon=addr.lon,
         subtotal=subtotal,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
         payment_status="created",
         status="pending",
         delivery_date=delivery_date,
@@ -2266,6 +2546,8 @@ def confirm_payment(
         order.razorpay_payment_id = body.razorpay_payment_id
         db.commit()
         db.refresh(order)
+        if order.coupon_code:
+            _log_coupon_usage(order.user_id, order.coupon_code, order.id, db)
 
     items = (
         db.query(OrderItem)
@@ -2322,6 +2604,8 @@ async def razorpay_webhook(
         if rzp_payment_id:
             order.razorpay_payment_id = rzp_payment_id
         db.commit()
+        if order.coupon_code:
+            _log_coupon_usage(order.user_id, order.coupon_code, order.id, db)
     elif event == "payment.failed" and order.payment_status == "created":
         order.payment_status = "failed"
         db.commit()
@@ -2335,6 +2619,7 @@ class KioskCheckoutIn(BaseModel):
     lat: float
     lon: float
     items: list[OrderItemIn]
+    coupon_code: Optional[str] = None
 
 
 def _build_kiosk_draft(
@@ -2417,7 +2702,11 @@ def kiosk_checkout(
     k, subtotal, max_prep, lines = _build_kiosk_draft(
         body.lat, body.lon, body.items, db
     )
-    amount_paise = int(round(subtotal * 100))
+    # Apply coupon if provided
+    coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=True, kiosk_user_id=k.user_id, db=db
+    )
+    amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
         raise HTTPException(400, "Order total must be greater than zero.")
 
@@ -2435,6 +2724,8 @@ def kiosk_checkout(
         delivery_lat=k.lat,
         delivery_lon=k.lon,
         subtotal=subtotal,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
         payment_status="created",
         status="pending",
         delivery_date=dining_at.astimezone(_IST).date(),
@@ -2543,7 +2834,11 @@ def accessories_checkout(
                 line_total=line_total,
             )
         )
-    amount_paise = int(round(subtotal * 100))
+    # Apply coupon if provided
+    coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db
+    )
+    amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
         raise HTTPException(400, "Order total must be greater than zero.")
 
@@ -2561,6 +2856,8 @@ def accessories_checkout(
         delivery_lat=ship_lat,
         delivery_lon=ship_lon,
         subtotal=subtotal,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
         payment_status="created",
         status="pending",
         delivery_date=None,
@@ -2671,7 +2968,11 @@ def dry_fish_checkout(
                 line_total=line_total,
             )
         )
-    amount_paise = int(round(subtotal * 100))
+    # Apply coupon if provided
+    coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db
+    )
+    amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
         raise HTTPException(400, "Order total must be greater than zero.")
 
@@ -2689,6 +2990,8 @@ def dry_fish_checkout(
         delivery_lat=ship_lat,
         delivery_lon=ship_lon,
         subtotal=subtotal,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
         payment_status="created",
         status="pending",
         delivery_date=None,
@@ -2799,7 +3102,11 @@ def pickles_checkout(
                 line_total=line_total,
             )
         )
-    amount_paise = int(round(subtotal * 100))
+    # Apply coupon if provided
+    coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db
+    )
+    amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
         raise HTTPException(400, "Order total must be greater than zero.")
 
@@ -2817,6 +3124,8 @@ def pickles_checkout(
         delivery_lat=ship_lat,
         delivery_lon=ship_lon,
         subtotal=subtotal,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
         payment_status="created",
         status="pending",
         delivery_date=None,
@@ -3884,6 +4193,126 @@ def kiosk_update_order(
     )
     customer = db.query(User).filter(User.id == o.user_id).first()
     return _kiosk_order_dto(o, items, customer)
+
+
+# ============ Kiosk: coupons ============
+@app.get("/kiosk/coupons", response_model=list[CouponOut])
+def list_kiosk_coupons(
+    user: User = Depends(kiosk_required),
+    db: Session = Depends(get_db),
+) -> list[CouponOut]:
+    coupons = db.query(Coupon).filter(Coupon.kiosk_user_id == user.id).order_by(Coupon.id.desc()).all()
+    return coupons
+
+
+@app.post("/kiosk/coupons", response_model=CouponOut, status_code=201)
+def create_kiosk_coupon(
+    body: CouponIn,
+    user: User = Depends(kiosk_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+    if existing:
+        raise HTTPException(400, "Coupon code already exists.")
+    coupon = Coupon(
+        code=body.code.upper(),
+        coupon_type=body.coupon_type,
+        discount_type=body.discount_type,
+        discount_value=body.discount_value,
+        max_discount=body.max_discount,
+        min_bill_amount=body.min_bill_amount,
+        applicable_categories=body.applicable_categories,
+        applicable_products=body.applicable_products,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        kiosk_user_id=user.id,
+        is_active=body.is_active if body.is_active is not None else True,
+    )
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.patch("/kiosk/coupons/{coupon_id}", response_model=CouponOut)
+def update_kiosk_coupon(
+    coupon_id: int,
+    body: CouponIn,
+    user: User = Depends(kiosk_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.kiosk_user_id == user.id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found or not owned by this kiosk.")
+    
+    if body.code.upper() != coupon.code:
+        existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+        if existing:
+            raise HTTPException(400, "Coupon code already exists.")
+            
+    coupon.code = body.code.upper()
+    coupon.coupon_type = body.coupon_type
+    coupon.discount_type = body.discount_type
+    coupon.discount_value = body.discount_value
+    coupon.max_discount = body.max_discount
+    coupon.min_bill_amount = body.min_bill_amount
+    coupon.applicable_categories = body.applicable_categories
+    coupon.applicable_products = body.applicable_products
+    coupon.start_date = body.start_date
+    coupon.end_date = body.end_date
+    if body.is_active is not None:
+        coupon.is_active = body.is_active
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.delete("/kiosk/coupons/{coupon_id}", status_code=204)
+def delete_kiosk_coupon(
+    coupon_id: int,
+    user: User = Depends(kiosk_required),
+    db: Session = Depends(get_db),
+) -> None:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.kiosk_user_id == user.id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found or not owned by this kiosk.")
+    db.delete(coupon)
+    db.commit()
+
+
+# ============ Customer: coupons validate ============
+@app.post("/customer/coupons/validate", response_model=CouponValidateOut)
+def validate_coupon_endpoint(
+    body: CouponValidateIn,
+    user: User = Depends(customer_required),
+    db: Session = Depends(get_db),
+) -> CouponValidateOut:
+    coupon = db.query(Coupon).filter(Coupon.code == body.coupon_code.upper(), Coupon.is_active == True).first()
+    if not coupon:
+        raise HTTPException(400, "Invalid coupon code.")
+        
+    if body.is_kiosk:
+        if body.lat is None or body.lon is None:
+            raise HTTPException(400, "lat and lon are required for kiosk validation.")
+        k, subtotal, max_prep, lines = _build_kiosk_draft(body.lat, body.lon, body.items, db)
+        discount = _validate_coupon_for_lines(coupon, user, subtotal, lines, is_kiosk_checkout=True, kiosk_user_id=k.user_id, db=db)
+    else:
+        if body.address_id is None:
+            raise HTTPException(400, "address_id is required for order validation.")
+        order_body = OrderIn(
+            address_id=body.address_id,
+            shop_id=body.shop_id,
+            items=body.items
+        )
+        shop, addr, subtotal, lines, delivery_date = _build_order_draft(order_body, user, db)
+        discount = _validate_coupon_for_lines(coupon, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db)
+        
+    return CouponValidateOut(
+        coupon_code=coupon.code,
+        discount_amount=discount,
+        subtotal=subtotal,
+        final_amount=round(subtotal - discount, 2)
+    )
 
 
 # ============ Admin: kiosk activation ============

@@ -115,6 +115,8 @@ def migrate_columns() -> None:
         conn.execute(text(f"UPDATE \"{SCHEMA}\".orders SET payment_status = 'paid' WHERE razorpay_order_id IS NULL AND payment_status = 'created'"))
         # Kiosk dine-in: expected-ready timestamp (now + max prep at checkout).
         conn.execute(text(f'ALTER TABLE "{SCHEMA}".orders ADD COLUMN IF NOT EXISTS dining_at TIMESTAMP'))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA}".orders ADD COLUMN IF NOT EXISTS coupon_code VARCHAR'))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA}".orders ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2)'))
         # Migrate a legacy single 'name' column into first_name, then drop it.
         conn.execute(text(f"""
             DO $$
