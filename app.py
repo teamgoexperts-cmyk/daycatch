@@ -607,7 +607,7 @@ Category = Literal[
 ]
 DEFAULT_CATEGORY_FIELD_SETTINGS = {
     category: {
-        "weight_enabled": category in ("fresh_fish", "frozen_fish"),
+        "weight_enabled": True,
         "prep_enabled": category == "fish_and_chips",
     }
     for category in CATEGORIES
