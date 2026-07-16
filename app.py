@@ -120,8 +120,9 @@ def _initiate_easebuzz_payment(order_id: int, amount: float, user: User) -> dict
     amt_str = f"{amount:.2f}"
     productinfo = f"DayCatch Order #{order_id}"
     firstname = user.first_name or "Customer"
-    email = user.email or "customer@daycatch.in"
-    phone = user.phone or ""
+    email = "customer@daycatch.in"
+    raw_phone = re.sub(r"\D", "", user.phone or "")
+    phone = raw_phone[-10:] if len(raw_phone) >= 10 else raw_phone
     
     # Hash sequence: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|salt
     hash_str = f"{EASEBUZZ_KEY}|{txnid}|{amt_str}|{productinfo}|{firstname}|{email}|||||||||||{EASEBUZZ_SALT}"
