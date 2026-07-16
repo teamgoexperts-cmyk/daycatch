@@ -749,9 +749,7 @@ def _menu_category_setting_out(
     defaults = DEFAULT_CATEGORY_FIELD_SETTINGS[category]
     return MenuCategorySettingOut(
         category=category,
-        weight_enabled=(
-            setting.weight_enabled if setting is not None else defaults["weight_enabled"]
-        ),
+        weight_enabled=True,
         prep_enabled=(
             setting.prep_enabled if setting is not None else defaults["prep_enabled"]
         ),
