@@ -681,6 +681,41 @@ def _normalize_menu_variants(raw: Optional[list[dict]]) -> Optional[list[dict]]:
     return variants or None
 
 
+def _default_variant_label(weight_kg: float) -> str:
+    grams = round(weight_kg * 1000)
+    return f"{grams} g" if weight_kg < 1 else f"{weight_kg:g} kg"
+
+
+def _menu_item_variants(item: MenuItem) -> Optional[list[dict]]:
+    if item.variants:
+        return item.variants
+    if item.weight_kg is None:
+        return None
+    weight_kg = float(item.weight_kg)
+    return [
+        {
+            "label": _default_variant_label(weight_kg),
+            "price": round(float(item.price), 2),
+            "weight_kg": round(weight_kg, 3),
+        }
+    ]
+
+
+def _menu_item_out(item: MenuItem) -> MenuItemOut:
+    return MenuItemOut(
+        id=item.id,
+        category=item.category,
+        name=item.name,
+        price=float(item.price),
+        description=item.description,
+        image_url=item.image_url,
+        weight_kg=float(item.weight_kg) if item.weight_kg is not None else None,
+        variants=_menu_item_variants(item),
+        prep_time_minutes=item.prep_time_minutes,
+        is_active=item.is_active,
+    )
+
+
 @app.post("/admin/upload")
 def admin_upload(
     file: UploadFile = File(...),
@@ -741,11 +776,11 @@ def admin_list_menu_items(
     category: Optional[Category] = None,
     _: User = Depends(admin_required),
     db: Session = Depends(get_db),
-) -> list[MenuItem]:
+) -> list[MenuItemOut]:
     q = db.query(MenuItem)
     if category:
         q = q.filter(MenuItem.category == category)
-    return q.order_by(MenuItem.category, MenuItem.name).all()
+    return [_menu_item_out(item) for item in q.order_by(MenuItem.category, MenuItem.name).all()]
 
 
 @app.post("/admin/menu-items", response_model=MenuItemOut, status_code=201)
@@ -753,7 +788,7 @@ def admin_create_menu_item(
     body: MenuItemIn,
     _: User = Depends(admin_required),
     db: Session = Depends(get_db),
-) -> MenuItem:
+) -> MenuItemOut:
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Name is required.")
@@ -775,7 +810,7 @@ def admin_create_menu_item(
     db.add(item)
     db.commit()
     db.refresh(item)
-    return item
+    return _menu_item_out(item)
 
 
 @app.patch("/admin/menu-items/{item_id}", response_model=MenuItemOut)
@@ -784,7 +819,7 @@ def admin_update_menu_item(
     body: MenuItemUpdate,
     _: User = Depends(admin_required),
     db: Session = Depends(get_db),
-) -> MenuItem:
+) -> MenuItemOut:
     item = db.query(MenuItem).filter(MenuItem.id == item_id).first()
     if not item:
         raise HTTPException(404, "Item not found.")
@@ -822,7 +857,7 @@ def admin_update_menu_item(
         item.is_active = body.is_active
     db.commit()
     db.refresh(item)
-    return item
+    return _menu_item_out(item)
 
 
 @app.delete("/admin/menu-items/{item_id}", status_code=204)
@@ -1299,7 +1334,7 @@ def customer_menu(
                 weight_kg=(
                     float(m.weight_kg) if m.weight_kg is not None else None
                 ),
-                variants=m.variants,
+                variants=_menu_item_variants(m),
             )
         )
 
@@ -1353,7 +1388,7 @@ def _store_item(m: MenuItem, price: float) -> CustomerMenuItem:
         image_url=m.image_url,
         price=price,
         weight_kg=float(m.weight_kg) if m.weight_kg is not None else None,
-        variants=m.variants,
+        variants=_menu_item_variants(m),
         prep_time_minutes=m.prep_time_minutes,
     )
 
