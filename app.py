@@ -3808,6 +3808,8 @@ def admin_update_kiosk_status(
     k = db.query(Kiosk).filter(Kiosk.id == kiosk_id).first()
     if not k:
         raise HTTPException(404, "Kiosk not found.")
+    if body.shop_status is None and body.operation_status is None:
+        raise HTTPException(400, "Send shop_status or operation_status.")
     if body.shop_status is not None:
         k.shop_status = body.shop_status
     if body.operation_status is not None:
