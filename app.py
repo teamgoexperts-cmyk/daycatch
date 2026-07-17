@@ -4310,6 +4310,64 @@ def delete_kiosk_coupon(
     db.commit()
 
 
+# ============ Customer: coupons list ============
+@app.get("/customer/coupons", response_model=list[CouponOut])
+def list_customer_coupons(
+    is_kiosk: bool = False,
+    shop_id: Optional[int] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    user: User = Depends(customer_required),  # noqa: ARG001
+    db: Session = Depends(get_db),
+) -> list[CouponOut]:
+    today = datetime.now(timezone.utc).astimezone(_IST).date()
+    
+    # 1. Query active admin/global coupons
+    admin_coupons = (
+        db.query(Coupon)
+        .filter(
+            Coupon.kiosk_user_id == None,
+            Coupon.is_active == True,
+            Coupon.start_date <= today,
+            Coupon.end_date >= today,
+        )
+        .all()
+    )
+    
+    # 2. Check if we should only return admin coupons
+    # Condition: "if the admin added a coupon then dont show kiosk coupons if not show kisoks coupon"
+    if len(admin_coupons) > 0:
+        return admin_coupons
+        
+    # 3. If there are no active admin coupons, check if we can query kiosk coupons
+    if is_kiosk:
+        kiosk_user_id = None
+        if shop_id is not None:
+            k = db.query(Kiosk).filter(Kiosk.id == shop_id).first()
+            if k:
+                kiosk_user_id = k.user_id
+        elif lat is not None and lon is not None:
+            hit = _closest_covering_kiosk(lat, lon, db)
+            if hit is not None:
+                _dist, k = hit
+                kiosk_user_id = k.user_id
+                
+        if kiosk_user_id is not None:
+            kiosk_coupons = (
+                db.query(Coupon)
+                .filter(
+                    Coupon.kiosk_user_id == kiosk_user_id,
+                    Coupon.is_active == True,
+                    Coupon.start_date <= today,
+                    Coupon.end_date >= today,
+                )
+                .all()
+            )
+            return kiosk_coupons
+            
+    return []
+
+
 # ============ Customer: coupons validate ============
 @app.post("/customer/coupons/validate", response_model=CouponValidateOut)
 def validate_coupon_endpoint(
