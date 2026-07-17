@@ -2293,10 +2293,13 @@ def _validate_coupon_for_lines(
     if today > coupon.end_date:
         raise HTTPException(400, "This coupon has expired.")
 
-    # 2. Kiosk check
+    # 2. Owner check (Kiosk or Distributor)
     if coupon.kiosk_user_id is not None:
-        if not is_kiosk_checkout or kiosk_user_id != coupon.kiosk_user_id:
-            raise HTTPException(400, "This coupon is only valid at the issuing kiosk.")
+        if kiosk_user_id != coupon.kiosk_user_id:
+            if is_kiosk_checkout:
+                raise HTTPException(400, "This coupon is only valid at the issuing kiosk.")
+            else:
+                raise HTTPException(400, "This coupon is only valid for the issuing distributor.")
             
     # 3. Type check (Welcome / One time)
     if coupon.coupon_type == "welcome":
@@ -2573,7 +2576,7 @@ def checkout_order(
 
     # Apply coupon if provided
     coupon_code, discount_amount, final_amount = _apply_coupon_to_checkout(
-        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db
+        body.coupon_code, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=shop.user_id, db=db
     )
     amount_paise = int(round(final_amount * 100))
     if amount_paise <= 0:
@@ -4339,7 +4342,7 @@ def list_customer_coupons(
     if len(admin_coupons) > 0:
         return admin_coupons
         
-    # 3. If there are no active admin coupons, check if we can query kiosk coupons
+    # 3. If there are no active admin coupons, check if we can query kiosk/distributor coupons
     if is_kiosk:
         kiosk_user_id = None
         if shop_id is not None:
@@ -4364,6 +4367,26 @@ def list_customer_coupons(
                 .all()
             )
             return kiosk_coupons
+    else:
+        # Distributor coupons check
+        distributor_user_id = None
+        if shop_id is not None:
+            s = db.query(Shop).filter(Shop.id == shop_id).first()
+            if s:
+                distributor_user_id = s.user_id
+                
+        if distributor_user_id is not None:
+            distributor_coupons = (
+                db.query(Coupon)
+                .filter(
+                    Coupon.kiosk_user_id == distributor_user_id,
+                    Coupon.is_active == True,
+                    Coupon.start_date <= today,
+                    Coupon.end_date >= today,
+                )
+                .all()
+            )
+            return distributor_coupons
             
     return []
 
@@ -4393,7 +4416,7 @@ def validate_coupon_endpoint(
             items=body.items
         )
         shop, addr, subtotal, lines, delivery_date = _build_order_draft(order_body, user, db)
-        discount = _validate_coupon_for_lines(coupon, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=None, db=db)
+        discount = _validate_coupon_for_lines(coupon, user, subtotal, lines, is_kiosk_checkout=False, kiosk_user_id=shop.user_id, db=db)
         
     return CouponValidateOut(
         coupon_code=coupon.code,
