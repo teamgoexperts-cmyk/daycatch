@@ -1110,6 +1110,7 @@ class CouponIn(BaseModel):
     start_date: date
     end_date: date
     is_active: Optional[bool] = True
+    kiosk_user_id: Optional[int] = None
 
 
 class CouponOut(BaseModel):
@@ -1159,7 +1160,7 @@ def create_admin_coupon(
         applicable_products=body.applicable_products,
         start_date=body.start_date,
         end_date=body.end_date,
-        kiosk_user_id=None,
+        kiosk_user_id=body.kiosk_user_id,
         is_active=body.is_active if body.is_active is not None else True,
     )
     db.add(coupon)
@@ -1194,6 +1195,7 @@ def update_admin_coupon(
     coupon.applicable_products = body.applicable_products
     coupon.start_date = body.start_date
     coupon.end_date = body.end_date
+    coupon.kiosk_user_id = body.kiosk_user_id
     if body.is_active is not None:
         coupon.is_active = body.is_active
     db.commit()
@@ -4309,6 +4311,91 @@ def delete_kiosk_coupon(
     coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.kiosk_user_id == user.id).first()
     if not coupon:
         raise HTTPException(404, "Coupon not found or not owned by this kiosk.")
+    db.delete(coupon)
+    db.commit()
+
+
+# ============ Distributor: coupons ============
+@app.get("/distributor/coupons", response_model=list[CouponOut])
+def list_distributor_coupons(
+    user: User = Depends(distributor_required),
+    db: Session = Depends(get_db),
+) -> list[CouponOut]:
+    coupons = db.query(Coupon).filter(Coupon.kiosk_user_id == user.id).order_by(Coupon.id.desc()).all()
+    return coupons
+
+
+@app.post("/distributor/coupons", response_model=CouponOut, status_code=201)
+def create_distributor_coupon(
+    body: CouponIn,
+    user: User = Depends(distributor_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+    if existing:
+        raise HTTPException(400, "Coupon code already exists.")
+    coupon = Coupon(
+        code=body.code.upper(),
+        coupon_type=body.coupon_type,
+        discount_type=body.discount_type,
+        discount_value=body.discount_value,
+        max_discount=body.max_discount,
+        min_bill_amount=body.min_bill_amount,
+        applicable_categories=body.applicable_categories,
+        applicable_products=body.applicable_products,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        kiosk_user_id=user.id,
+        is_active=body.is_active if body.is_active is not None else True,
+    )
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.patch("/distributor/coupons/{coupon_id}", response_model=CouponOut)
+def update_distributor_coupon(
+    coupon_id: int,
+    body: CouponIn,
+    user: User = Depends(distributor_required),
+    db: Session = Depends(get_db),
+) -> CouponOut:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.kiosk_user_id == user.id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found or not owned by this distributor.")
+    
+    if body.code.upper() != coupon.code:
+        existing = db.query(Coupon).filter(Coupon.code == body.code.upper()).first()
+        if existing:
+            raise HTTPException(400, "Coupon code already exists.")
+            
+    coupon.code = body.code.upper()
+    coupon.coupon_type = body.coupon_type
+    coupon.discount_type = body.discount_type
+    coupon.discount_value = body.discount_value
+    coupon.max_discount = body.max_discount
+    coupon.min_bill_amount = body.min_bill_amount
+    coupon.applicable_categories = body.applicable_categories
+    coupon.applicable_products = body.applicable_products
+    coupon.start_date = body.start_date
+    coupon.end_date = body.end_date
+    if body.is_active is not None:
+        coupon.is_active = body.is_active
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@app.delete("/distributor/coupons/{coupon_id}", status_code=204)
+def delete_distributor_coupon(
+    coupon_id: int,
+    user: User = Depends(distributor_required),
+    db: Session = Depends(get_db),
+) -> None:
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.kiosk_user_id == user.id).first()
+    if not coupon:
+        raise HTTPException(404, "Coupon not found or not owned by this distributor.")
     db.delete(coupon)
     db.commit()
 
