@@ -63,6 +63,12 @@ OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
 # Dev: log OTP to server console and return it in the API response (no SMS provider).
 DEV_LOG_OTP = os.getenv("DEV_LOG_OTP", "true").lower() in ("1", "true", "yes")
 
+# Testing phone numbers with fixed test OTPs
+TEST_NUMBERS = {
+    "+919441457677": "123456",
+}
+
+
 import json as _json
 
 # Razorpay. KEY_ID is public (sent to the app to open checkout); KEY_SECRET
@@ -323,9 +329,13 @@ app.add_middleware(
 def _session_for_phone(phone: str, role: Role, db: Session) -> SessionOut:
     """Look up (or create) the user and issue a DayCatch session JWT."""
     user = db.query(User).filter(User.phone == phone, User.role == role).first()
-    if user is None and role == "customer":
-        user = User(phone=phone, role="customer", is_active=True)
+    if user is None and (role == "customer" or phone in TEST_NUMBERS):
+        user = User(phone=phone, role=role, is_active=True)
         db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif user and phone in TEST_NUMBERS and not user.is_active:
+        user.is_active = True
         db.commit()
         db.refresh(user)
     if not user or not user.is_active:
@@ -347,7 +357,10 @@ def send_otp(body: OtpSendIn, db: Session = Depends(get_db)) -> OtpSendOut:
     if not PHONE_RE.match(phone):
         raise HTTPException(400, "Enter a valid Indian phone number (+91, 10 digits).")
 
-    code = f"{secrets.randbelow(900000) + 100000:06d}"
+    if phone in TEST_NUMBERS:
+        code = TEST_NUMBERS[phone]
+    else:
+        code = f"{secrets.randbelow(900000) + 100000:06d}"
     expires = datetime.now(timezone.utc) + timedelta(minutes=OTP_TTL_MINUTES)
 
     db.query(OtpChallenge).filter(
@@ -375,6 +388,14 @@ def verify_otp(body: OtpVerifyIn, db: Session = Depends(get_db)) -> SessionOut:
     otp = (body.otp or "").strip()
     if not re.fullmatch(r"\d{6}", otp):
         raise HTTPException(400, "Enter the 6-digit code.")
+
+    if phone in TEST_NUMBERS and otp == TEST_NUMBERS[phone]:
+        db.query(OtpChallenge).filter(
+            OtpChallenge.phone == phone, OtpChallenge.role == body.role
+        ).delete()
+        db.commit()
+        print(f"[auth/otp/verify] test_number ok phone={phone} role={body.role}")
+        return _session_for_phone(phone, body.role, db)
 
     now = datetime.now(timezone.utc)
     challenge = (
